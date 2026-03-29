@@ -43,8 +43,9 @@ class ASRProvider(ASRProviderBase):
         )
         if self.enable_multilingual:
             self.ws_url = "wss://openspeech.bytedance.com/api/v3/sauc/bigmodel_nostream"
+            
         else:
-            self.ws_url = "wss://openspeech.bytedance.com/api/v3/sauc/bigmodel"
+            self.ws_url = "wss://openspeech.bytedance.com/api/v3/sauc/bigmodel_async"
         self.uid = config.get("uid", "streaming_asr_service")
         self.workflow = config.get(
             "workflow", "audio_in,resample,partition,vad,fe,decode,itn,nlu_punctuate"
