@@ -320,7 +320,8 @@ class ASRProvider(ASRProviderBase):
         return {
             "X-Api-App-Key": self.appid,
             "X-Api-Access-Key": self.access_token,
-            "X-Api-Resource-Id": "volc.bigasr.sauc.duration",
+            # "X-Api-Resource-Id": "volc.bigasr.sauc.duration",
+            "X-Api-Resource-Id": "volc.seedasr.sauc.duration",
             "X-Api-Connect-Id": str(uuid.uuid4()),
         }
 
