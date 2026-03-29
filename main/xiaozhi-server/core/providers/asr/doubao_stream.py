@@ -373,6 +373,7 @@ class ASRProvider(ASRProviderBase):
             # 获取消息头
             header = res[:4]
             message_type = header[1] >> 4
+            message_type_specific_flags = header[1] & 0x0F  # 加上这行，获取特定标志位
 
             # 如果是错误响应
             if message_type == 0x0F:  # SERVER_ERROR_RESPONSE
@@ -385,16 +386,46 @@ class ASRProvider(ASRProviderBase):
                     "payload_msg": error_msg,
                 }
 
-            # 获取JSON数据（跳过12字节头部）
+            # 获取JSON数据
             try:
-                json_data = res[12:].decode("utf-8")
+                # 动态判断真正的头部长度！
+                # 如果特定标志位的最后一位是 1，说明带有 4字节的 sequence，总长度 12
+                # 否则说明没有 sequence，总长度就是 8
+                offset = 12 if (message_type_specific_flags & 0x01) else 8
+                
+                json_data = res[offset:].decode("utf-8")
                 result = json.loads(json_data)
                 logger.bind(tag=TAG).debug(f"成功解析JSON响应: {result}")
                 return {"payload_msg": result}
             except (UnicodeDecodeError, json.JSONDecodeError) as e:
                 logger.bind(tag=TAG).error(f"JSON解析失败: {str(e)}")
-                logger.bind(tag=TAG).error(f"原始数据: {res}")
+                logger.bind(tag=TAG).error(f"原始数据偏移量 {offset} 后的内容: {res[offset:]}")
                 raise
+            # # 获取消息头
+            # header = res[:4]
+            # message_type = header[1] >> 4
+
+            # # 如果是错误响应
+            # if message_type == 0x0F:  # SERVER_ERROR_RESPONSE
+            #     code = int.from_bytes(res[4:8], "big", signed=False)
+            #     msg_length = int.from_bytes(res[8:12], "big", signed=False)
+            #     error_msg = json.loads(res[12:].decode("utf-8"))
+            #     return {
+            #         "code": code,
+            #         "msg_length": msg_length,
+            #         "payload_msg": error_msg,
+            #     }
+
+            # # 获取JSON数据（跳过12字节头部）
+            # try:
+            #     json_data = res[12:].decode("utf-8")
+            #     result = json.loads(json_data)
+            #     logger.bind(tag=TAG).debug(f"成功解析JSON响应: {result}")
+            #     return {"payload_msg": result}
+            # except (UnicodeDecodeError, json.JSONDecodeError) as e:
+            #     logger.bind(tag=TAG).error(f"JSON解析失败: {str(e)}")
+            #     logger.bind(tag=TAG).error(f"原始数据: {res}")
+            #     raise
 
         except Exception as e:
             logger.bind(tag=TAG).error(f"解析响应失败: {str(e)}")
