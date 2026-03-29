@@ -316,19 +316,11 @@ class ASRProvider(ASRProviderBase):
         )
         return req
 
-    # def token_auth(self):
-    #     return {
-    #         "X-Api-App-Key": self.appid,
-    #         "X-Api-Access-Key": self.access_token,
-    #         # "X-Api-Resource-Id": "volc.bigasr.sauc.duration",
-    #         "X-Api-Resource-Id": "volc.seedasr.sauc.duration",
-    #         "X-Api-Connect-Id": str(uuid.uuid4()),
-    #     }
     def token_auth(self):
         return {
             "X-Api-App-Key": self.appid,
-            # 尝试手动加上 Bearer 前缀
-            "X-Api-Access-Key": f"Bearer {self.access_token}", 
+            "X-Api-Access-Key": self.access_token,
+            # "X-Api-Resource-Id": "volc.bigasr.sauc.duration",
             "X-Api-Resource-Id": "volc.seedasr.sauc.duration",
             "X-Api-Connect-Id": str(uuid.uuid4()),
         }
