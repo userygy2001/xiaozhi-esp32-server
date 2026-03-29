@@ -13,7 +13,7 @@ from core.utils.gc_manager import get_gc_manager
 
 TAG = __name__
 logger = setup_logging()
-
+# 这个文件是小智服务器的主入口，负责启动WebSocket服务器和HTTP服务器，并处理优雅退出。
 
 async def wait_for_exit() -> None:
     """
