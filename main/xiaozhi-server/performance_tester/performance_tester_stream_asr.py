@@ -149,7 +149,8 @@ class DoubaoStreamASRTester(BaseASRTester):
                 headers = {
                     "X-Api-App-Key": appid,
                     "X-Api-Access-Key": access_token,
-                    "X-Api-Resource-Id": "volc.bigasr.sauc.duration",
+                    # "X-Api-Resource-Id": "volc.bigasr.sauc.duration",
+                    "X-Api-Resource-Id": "volc.seedasr.sauc.duration",
                     "X-Api-Connect-Id": str(uuid.uuid4())
                 }
 
