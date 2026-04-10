@@ -42,9 +42,15 @@ from core.utils.prompt_manager import PromptManager
 from core.utils.voiceprint_provider import VoiceprintProvider
 from core.utils.util import get_system_error_response
 from core.utils import textUtils
-
+from core.realtime_bridge import RealtimeBridge
 
 TAG = __name__
+
+# 单一链路开关：只改这里
+# 可选值: "legacy" 或 "realtime"
+CONVERSATION_MODE = "realtime"
+ENABLE_REALTIME_BRIDGE = CONVERSATION_MODE.lower() == "realtime"
+ENABLE_LEGACY_PIPELINE = CONVERSATION_MODE.lower() == "legacy"
 
 # 工具调用规则 - 用于动态注入提醒
 TOOL_CALLING_RULES = """
@@ -206,6 +212,25 @@ class ConnectionHandler:
         # 初始化提示词管理器
         self.prompt_manager = PromptManager(self.config, self.logger)
 
+        # 单一链路开关：ListenTextMessageHandler / 音频分发都只读这个值
+        self.conversation_mode = CONVERSATION_MODE.lower()
+        self.enable_realtime_bridge = ENABLE_REALTIME_BRIDGE
+        self.enable_legacy_pipeline = ENABLE_LEGACY_PIPELINE
+        self.realtime_bridge = (
+            RealtimeBridge(self.config.get("realtime_bridge", {}))
+            if self.enable_realtime_bridge
+            else None
+        )
+        self.logger.info(
+            f"[pipeline] mode={self.conversation_mode} legacy={self.enable_legacy_pipeline} realtime={self.enable_realtime_bridge}"
+        )
+
+    def _dispatch_device_audio(self, audio_data: bytes):
+        if getattr(self, "enable_realtime_bridge", False) and self.realtime_bridge is not None:
+            self.realtime_bridge.enqueue_device_audio(self, audio_data)
+        else:
+            self.asr_audio_queue.put(audio_data)
+
     async def handle_connection(self, ws: websockets.ServerConnection):
         try:
             # 获取运行中的事件循环（必须在异步上下文中）
@@ -348,17 +373,23 @@ class ConnectionHandler:
         if isinstance(message, str):
             await handleTextMessage(self, message)
         elif isinstance(message, bytes):
-            if self.vad is None or self.asr is None:
-                return
 
-            # 处理来自MQTT网关的音频包
+            # MQTT 网关包优先走拆头逻辑
             if self.conn_from_mqtt_gateway and len(message) >= 16:
                 handled = await self._process_mqtt_audio_message(message)
                 if handled:
                     return
 
-            # 不需要头部处理或没有头部时，直接处理原始消息
-            self.asr_audio_queue.put(message)
+            # 新链路启用时，直接进桥接层
+            if getattr(self, "enable_realtime_bridge", False):
+                self._dispatch_device_audio(message)
+                return
+
+            # 旧链路保留
+            if self.vad is None or self.asr is None:
+                return
+
+            self._dispatch_device_audio(message)
 
     async def _process_mqtt_audio_message(self, message):
         """
@@ -385,7 +416,7 @@ class ConnectionHandler:
             elif len(message) > 16:
                 # 没有指定长度或长度无效，去掉头部后处理剩余数据
                 audio_data = message[16:]
-                self.asr_audio_queue.put(audio_data)
+                self._dispatch_device_audio(audio_data)
                 return True
         except Exception as e:
             self.logger.bind(tag=TAG).error(f"解析WebSocket音频包失败: {e}")
@@ -403,7 +434,7 @@ class ConnectionHandler:
 
         # 如果时间戳是递增的，直接处理
         if timestamp >= self.last_processed_timestamp:
-            self.asr_audio_queue.put(audio_data)
+            self._dispatch_device_audio(audio_data)
             self.last_processed_timestamp = timestamp
 
             # 处理缓冲区中的后续包
@@ -413,7 +444,7 @@ class ConnectionHandler:
                 for ts in sorted(self.audio_timestamp_buffer.keys()):
                     if ts > self.last_processed_timestamp:
                         buffered_audio = self.audio_timestamp_buffer.pop(ts)
-                        self.asr_audio_queue.put(buffered_audio)
+                        self._dispatch_device_audio(buffered_audio)
                         self.last_processed_timestamp = ts
                         processed_any = True
                         break
@@ -422,7 +453,7 @@ class ConnectionHandler:
             if len(self.audio_timestamp_buffer) < self.max_timestamp_buffer_size:
                 self.audio_timestamp_buffer[timestamp] = audio_data
             else:
-                self.asr_audio_queue.put(audio_data)
+                self._dispatch_device_audio(audio_data)
 
     async def handle_restart(self, message):
         """处理服务器重启请求"""
@@ -474,50 +505,49 @@ class ConnectionHandler:
 
     def _initialize_components(self):
         try:
+            if self.need_bind:
+                self.bind_completed_event.set()
+                return
+
+            self.selected_module_str = build_module_string(
+                self.config.get("selected_module", {})
+            )
+            self.logger = create_connection_logger(self.selected_module_str)
+
+            # realtime 模式下，不初始化旧链路组件
+            if self.enable_realtime_bridge:
+                self.logger.bind(tag=TAG).info("当前为 realtime 模式，跳过旧链路组件初始化")
+                return
+
+            # legacy 模式：初始化旧链路完整组件
             if self.tts is None:
                 self.tts = self._initialize_tts()
             # 打开语音合成通道
             asyncio.run_coroutine_threadsafe(
                 self.tts.open_audio_channels(self), self.loop
             )
-            if self.need_bind:
-                self.bind_completed_event.set()
-                return
-            self.selected_module_str = build_module_string(
-                self.config.get("selected_module", {})
-            )
-            self.logger = create_connection_logger(self.selected_module_str)
 
-            """初始化组件"""
             if self.config.get("prompt") is not None:
                 user_prompt = self.config["prompt"]
-                # 使用快速提示词进行初始化
                 prompt = self.prompt_manager.get_quick_prompt(user_prompt)
                 self.change_system_prompt(prompt)
                 self.logger.bind(tag=TAG).info(
                     f"快速初始化组件: prompt成功 {prompt[:50]}..."
                 )
 
-            """初始化本地组件"""
             if self.vad is None:
                 self.vad = self._vad
             if self.asr is None:
                 self.asr = self._initialize_asr()
 
-            # 初始化声纹识别
             self._initialize_voiceprint()
-            # 打开语音识别通道
             asyncio.run_coroutine_threadsafe(
                 self.asr.open_audio_channels(self), self.loop
             )
 
-            """加载记忆"""
             self._initialize_memory()
-            """加载意图识别"""
             self._initialize_intent()
-            """初始化上报线程"""
             self._init_report_threads()
-            """更新系统提示词"""
             self._init_prompt_enhancement()
 
         except Exception as e:
@@ -704,6 +734,11 @@ class ConnectionHandler:
             self.config["mcp_endpoint"] = private_config["mcp_endpoint"]
         if private_config.get("context_providers", None) is not None:
             self.config["context_providers"] = private_config["context_providers"]
+
+        # realtime 模式下，不初始化旧链路模块；只保留差异化配置读取
+        if self.enable_realtime_bridge:
+            self.logger.bind(tag=TAG).info("当前为 realtime 模式，跳过旧链路 initialize_modules")
+            return
 
         # 使用 run_in_executor 在线程池中执行 initialize_modules，避免阻塞主循环
         try:
